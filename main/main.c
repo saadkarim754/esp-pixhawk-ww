@@ -138,17 +138,23 @@ static void handle_heartbeat(const mavlink_message_t *msg)
     mavlink_heartbeat_t heartbeat;
     mavlink_msg_heartbeat_decode(msg, &heartbeat);
     
-    heartbeat_count++;
-    last_heartbeat_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    
-    ESP_LOGI(TAG, "HEARTBEAT #%lu from SYS:%d COMP:%d", 
-             heartbeat_count, msg->sysid, msg->compid);
-    ESP_LOGI(TAG, "  Type: %d, Autopilot: %s, State: %s",
-             heartbeat.type, 
-             get_autopilot_str(heartbeat.autopilot),
-             get_system_status_str(heartbeat.system_status));
-    ESP_LOGI(TAG, "  Base Mode: 0x%02X, Custom Mode: %lu",
-             heartbeat.base_mode, heartbeat.custom_mode);
+    // Only count heartbeats from autopilot (ignore GCS heartbeats on SYS 255)
+    if (msg->sysid != 255) {
+        heartbeat_count++;
+        last_heartbeat_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        
+        ESP_LOGI(TAG, "HEARTBEAT #%lu from SYS:%d COMP:%d", 
+                 heartbeat_count, msg->sysid, msg->compid);
+        ESP_LOGI(TAG, "  Type: %d, Autopilot: %s, State: %s",
+                 heartbeat.type, 
+                 get_autopilot_str(heartbeat.autopilot),
+                 get_system_status_str(heartbeat.system_status));
+        ESP_LOGI(TAG, "  Base Mode: 0x%02X, Custom Mode: %lu",
+                 heartbeat.base_mode, heartbeat.custom_mode);
+    } else {
+        // GCS heartbeat - log at debug level
+        ESP_LOGD(TAG, "GCS heartbeat from SYS:%d COMP:%d", msg->sysid, msg->compid);
+    }
 }
 
 /**
@@ -174,6 +180,7 @@ static void process_mavlink_message(const mavlink_message_t *msg)
 static void mavlink_rx_task(void *pvParameters)
 {
     uint8_t data[128];
+    static uint32_t bad_crc_count = 0;
     
     ESP_LOGI(TAG, "MAVLink RX task started");
     
@@ -187,7 +194,11 @@ static void mavlink_rx_task(void *pvParameters)
                 if (result == MAVLINK_FRAMING_OK) {
                     process_mavlink_message(&mav_msg);
                 } else if (result == MAVLINK_FRAMING_BAD_CRC) {
-                    ESP_LOGW(TAG, "Bad CRC on message");
+                    bad_crc_count++;
+                    // Only log every 100th bad CRC to reduce spam
+                    if (bad_crc_count % 100 == 1) {
+                        ESP_LOGW(TAG, "Bad CRC (total: %lu, msg_id: %lu)", bad_crc_count, mav_msg.msgid);
+                    }
                 }
             }
         }
