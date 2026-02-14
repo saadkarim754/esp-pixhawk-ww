@@ -1,0 +1,12 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "clangd.path": "E:\\esp-idf\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=e:\\esp-idf-fun\\esp-pixhawk-ww\\build"
+  ],
+  "idf.currentSetup": "C:\\Users\\ABID COMPUTERS\\esp\\v5.5.1\\esp-idf",
+  "idf.portWin": "COM3",
+  "idf.flashType": "UART"
+}
