@@ -1,14 +1,15 @@
 /**
- * ESP32 MAVLink Companion Computer
+ * @file heartbeat.c
+ * @brief ESP32 MAVLink Companion Computer - Heartbeat Communication
  * 
- * Connects to Pixhawk via TELEM2 (GPIO 16/17) and receives heartbeat messages.
- * Sends companion computer heartbeat back to establish bidirectional communication.
+ * Main entry point for ESP32 companion computer.
+ * Connects to Pixhawk via TELEM2 and handles bidirectional heartbeat communication.
  * 
  * Configuration:
  * - Baud Rate: 57600
  * - Protocol: MAVLink 2
- * - TX: GPIO 17
- * - RX: GPIO 16
+ * - TX: GPIO 16
+ * - RX: GPIO 17
  */
 
 #include <stdio.h>
@@ -18,7 +19,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "mavlink.h"
+#include "mavespstm.h"
 
 // Configuration
 #define PIXHAWK_UART_NUM     UART_NUM_2
@@ -31,7 +32,7 @@
 #define COMPANION_SYSTEM_ID    1    // Same system ID as the autopilot
 #define COMPANION_COMPONENT_ID MAV_COMP_ID_ONBOARD_COMPUTER  // 191
 
-static const char *TAG = "MAVLink";
+static const char *TAG = "Heartbeat";
 
 // MAVLink status and message buffers
 static mavlink_status_t mav_status;
@@ -210,7 +211,7 @@ static void mavlink_rx_task(void *pvParameters)
  */
 static void mavlink_heartbeat_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "MAVLink heartbeat task started");
+    ESP_LOGI(TAG, "MAVLink heartbeat TX task started");
     
     while (1) {
         send_heartbeat();
@@ -250,16 +251,13 @@ static void status_task(void *pvParameters)
     }
 }
 
-void app_main(void)
+// ============================================================================
+// Public API
+// ============================================================================
+
+void heartbeat_init(void)
 {
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "ESP32 MAVLink Companion Computer");
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "Pixhawk TELEM2 -> ESP32");
-    ESP_LOGI(TAG, "ESP TX: GPIO %d, ESP RX: GPIO %d", PIXHAWK_TX_PIN, PIXHAWK_RX_PIN);
-    ESP_LOGI(TAG, "Baud: %d, Protocol: MAVLink 2", PIXHAWK_BAUD_RATE);
-    ESP_LOGI(TAG, "System ID: %d, Component ID: %d", COMPANION_SYSTEM_ID, COMPANION_COMPONENT_ID);
-    ESP_LOGI(TAG, "=================================");
+    ESP_LOGI(TAG, "Initializing heartbeat module...");
     
     // Initialize MAVLink status
     mavlink_status_init(&mav_status);
@@ -272,5 +270,49 @@ void app_main(void)
     xTaskCreate(mavlink_heartbeat_task, "mavlink_hb", 2048, NULL, 5, NULL);
     xTaskCreate(status_task, "status", 2048, NULL, 3, NULL);
     
-    ESP_LOGI(TAG, "All tasks started. Waiting for Pixhawk...");
+    ESP_LOGI(TAG, "Heartbeat module initialized");
+}
+
+uint32_t heartbeat_get_count(void)
+{
+    return heartbeat_count;
+}
+
+bool heartbeat_is_connected(void)
+{
+    if (heartbeat_count == 0) {
+        return false;
+    }
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    return (current_time - last_heartbeat_time) < 3000;  // 3 second timeout
+}
+
+uint32_t heartbeat_get_time_since_last(void)
+{
+    if (heartbeat_count == 0) {
+        return UINT32_MAX;
+    }
+    uint32_t current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    return current_time - last_heartbeat_time;
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "=========================================");
+    ESP_LOGI(TAG, "   ESP32 MAVLink Companion Computer");
+    ESP_LOGI(TAG, "=========================================");
+    ESP_LOGI(TAG, "Pixhawk TELEM2 -> ESP32");
+    ESP_LOGI(TAG, "TX: GPIO %d, RX: GPIO %d", PIXHAWK_TX_PIN, PIXHAWK_RX_PIN);
+    ESP_LOGI(TAG, "Baud: %d, Protocol: MAVLink 2", PIXHAWK_BAUD_RATE);
+    ESP_LOGI(TAG, "System ID: %d, Component ID: %d", COMPANION_SYSTEM_ID, COMPANION_COMPONENT_ID);
+    ESP_LOGI(TAG, "=========================================");
+    
+    // Initialize and start heartbeat communication
+    heartbeat_init();
+    
+    ESP_LOGI(TAG, "System running. Waiting for Pixhawk...");
 }

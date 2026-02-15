@@ -1,17 +1,18 @@
-#ifndef MAVLINK_CHECKSUM_H
-#define MAVLINK_CHECKSUM_H
+/**
+ * @file mavlink_checksum.h
+ * @brief X.25 CRC checksum implementation for MAVLink
+ */
+
+#ifndef MAVESPSTM_MAVLINK_CHECKSUM_H
+#define MAVESPSTM_MAVLINK_CHECKSUM_H
 
 #include <stdint.h>
 
 /**
  * @brief Accumulate the X.25 CRC by adding one char at a time.
- *
- * The checksum function adds the hash of one char at a time to the
- * 16 bit checksum (uint16_t).
- *
  * @param data new byte to hash
  * @param crc_accum the already accumulated checksum
- **/
+ */
 static inline void crc_accumulate(uint8_t data, uint16_t *crc_accum)
 {
     uint8_t tmp;
@@ -50,4 +51,4 @@ static inline void crc_accumulate_buffer(uint16_t *crc_accum, const char *buf, u
     }
 }
 
-#endif // MAVLINK_CHECKSUM_H
+#endif // MAVESPSTM_MAVLINK_CHECKSUM_H

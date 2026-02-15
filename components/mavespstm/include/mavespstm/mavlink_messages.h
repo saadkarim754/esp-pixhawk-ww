@@ -1,12 +1,63 @@
-#ifndef MAVLINK_H
-#define MAVLINK_H
+/**
+ * @file mavlink_messages.h
+ * @brief MAVLink message structures and encoding/decoding functions
+ */
+
+#ifndef MAVESPSTM_MAVLINK_MESSAGES_H
+#define MAVESPSTM_MAVLINK_MESSAGES_H
 
 #include "mavlink_types.h"
-#include "common/mavlink_checksum.h"
+#include "mavlink_checksum.h"
 
-// CRC extra bytes for MAVLink message validation
-// From: https://mavlink.io/en/guide/serialization.html#crc_extra
-// Get CRC extra for a message ID
+// ============================================================================
+// CRC Extra Values
+// ============================================================================
+
+#define MAVLINK_MSG_ID_HEARTBEAT_CRC 50
+#define MAVLINK_MSG_ID_HEARTBEAT_LEN 9
+
+#define MAVLINK_MSG_ID_ATTITUDE_CRC 39
+#define MAVLINK_MSG_ID_ATTITUDE_LEN 28
+
+// ============================================================================
+// Message Structures
+// ============================================================================
+
+/**
+ * @brief Heartbeat message structure
+ */
+typedef struct __mavlink_heartbeat_t {
+    uint32_t custom_mode;    // Custom mode (flight mode)
+    uint8_t type;            // Vehicle type (MAV_TYPE)
+    uint8_t autopilot;       // Autopilot type (MAV_AUTOPILOT)
+    uint8_t base_mode;       // Base mode flags
+    uint8_t system_status;   // System status (MAV_STATE)
+    uint8_t mavlink_version; // MAVLink version
+} mavlink_heartbeat_t;
+
+/**
+ * @brief Attitude message structure (MSG ID 30)
+ * Contains vehicle attitude (roll, pitch, yaw) in radians
+ */
+typedef struct __mavlink_attitude_t {
+    uint32_t time_boot_ms;   // Timestamp (ms since boot)
+    float roll;              // Roll angle (-pi..+pi) [rad]
+    float pitch;             // Pitch angle (-pi..+pi) [rad]
+    float yaw;               // Yaw angle (-pi..+pi) [rad]
+    float rollspeed;         // Roll angular speed [rad/s]
+    float pitchspeed;        // Pitch angular speed [rad/s]
+    float yawspeed;          // Yaw angular speed [rad/s]
+} mavlink_attitude_t;
+
+// ============================================================================
+// CRC Extra Lookup Function
+// ============================================================================
+
+/**
+ * @brief Get CRC extra byte for a message ID
+ * @param msgid Message ID
+ * @return CRC extra byte
+ */
 static inline uint8_t mavlink_get_crc_extra(uint32_t msgid) {
     switch (msgid) {
         case 0:   return 50;   // HEARTBEAT
@@ -223,168 +274,13 @@ static inline uint8_t mavlink_get_crc_extra(uint32_t msgid) {
     }
 }
 
-// Initialize a MAVLink status structure
-static inline void mavlink_status_init(mavlink_status_t *status) {
-    status->msg_received = 0;
-    status->buffer_overrun = 0;
-    status->parse_error = 0;
-    status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-    status->packet_idx = 0;
-    status->current_rx_seq = 0;
-    status->current_tx_seq = 0;
-    status->packet_rx_success_count = 0;
-    status->packet_rx_drop_count = 0;
-    status->flags = 0;
-    status->signature_wait = 0;
-    status->signing = NULL;
-    status->signing_streams = NULL;
-}
+// ============================================================================
+// Heartbeat Message Functions
+// ============================================================================
 
-// Parse a MAVLink byte stream - returns MAVLINK_FRAMING_OK when complete message received
-static inline uint8_t mavlink_parse_char(uint8_t chan, uint8_t c, mavlink_message_t *msg, mavlink_status_t *status) {
-    (void)chan;  // Channel not used in simple implementation
-    
-    uint8_t *payload = (uint8_t *)msg->payload64;
-    
-    switch (status->parse_state) {
-    case MAVLINK_PARSE_STATE_UNINIT:
-    case MAVLINK_PARSE_STATE_IDLE:
-        if (c == MAVLINK_STX_V2) {
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_STX;
-            msg->magic = c;
-            msg->len = 0;
-            msg->incompat_flags = 0;
-            msg->compat_flags = 0;
-            status->packet_idx = 0;
-            crc_init(&msg->checksum);
-        } else if (c == MAVLINK_STX_V1) {
-            // MAVLink v1 - handle if needed
-            status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_STX:
-        msg->len = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_LENGTH;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_LENGTH:
-        msg->incompat_flags = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_INCOMPAT_FLAGS;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_INCOMPAT_FLAGS:
-        msg->compat_flags = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_COMPAT_FLAGS;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_COMPAT_FLAGS:
-        msg->seq = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_SEQ;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_SEQ:
-        msg->sysid = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_SYSID;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_SYSID:
-        msg->compid = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_COMPID;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_COMPID:
-        msg->msgid = c;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_MSGID1;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_MSGID1:
-        msg->msgid |= (uint32_t)c << 8;
-        crc_accumulate(c, &msg->checksum);
-        status->parse_state = MAVLINK_PARSE_STATE_GOT_MSGID2;
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_MSGID2:
-        msg->msgid |= (uint32_t)c << 16;
-        crc_accumulate(c, &msg->checksum);
-        if (msg->len == 0) {
-            // No payload
-            crc_accumulate(mavlink_get_crc_extra(msg->msgid), &msg->checksum);
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_PAYLOAD;
-        } else {
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_MSGID3;
-            status->packet_idx = 0;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_MSGID3:
-        payload[status->packet_idx++] = c;
-        crc_accumulate(c, &msg->checksum);
-        if (status->packet_idx >= msg->len) {
-            // Add CRC extra byte
-            crc_accumulate(mavlink_get_crc_extra(msg->msgid), &msg->checksum);
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_PAYLOAD;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_PAYLOAD:
-        msg->ck[0] = c;
-        if ((msg->checksum & 0xFF) != c) {
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_BAD_CRC;
-            status->parse_error++;
-        } else {
-            status->parse_state = MAVLINK_PARSE_STATE_GOT_CRC1;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_CRC1:
-        msg->ck[1] = c;
-        if ((msg->checksum >> 8) != c) {
-            status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-            status->packet_rx_drop_count++;
-            return MAVLINK_FRAMING_BAD_CRC;
-        }
-        // Check for signature (if incompat_flags has bit 0 set)
-        if (msg->incompat_flags & 0x01) {
-            status->signature_wait = MAVLINK_SIGNATURE_BLOCK_LEN;
-            status->parse_state = MAVLINK_PARSE_STATE_SIGNATURE_WAIT;
-        } else {
-            status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-            status->packet_rx_success_count++;
-            return MAVLINK_FRAMING_OK;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_SIGNATURE_WAIT:
-        status->signature_wait--;
-        if (status->signature_wait == 0) {
-            status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-            status->packet_rx_success_count++;
-            return MAVLINK_FRAMING_OK;
-        }
-        break;
-        
-    case MAVLINK_PARSE_STATE_GOT_BAD_CRC:
-        status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-        status->packet_rx_drop_count++;
-        return MAVLINK_FRAMING_BAD_CRC;
-        
-    default:
-        status->parse_state = MAVLINK_PARSE_STATE_IDLE;
-        break;
-    }
-    
-    return MAVLINK_FRAMING_INCOMPLETE;
-}
-
-// Decode heartbeat message from a MAVLink message
+/**
+ * @brief Decode heartbeat message from a MAVLink message
+ */
 static inline void mavlink_msg_heartbeat_decode(const mavlink_message_t *msg, mavlink_heartbeat_t *heartbeat) {
     const uint8_t *payload = (const uint8_t *)msg->payload64;
     heartbeat->custom_mode = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
@@ -395,7 +291,10 @@ static inline void mavlink_msg_heartbeat_decode(const mavlink_message_t *msg, ma
     heartbeat->mavlink_version = payload[8];
 }
 
-// Pack a heartbeat message into buffer and return length
+/**
+ * @brief Pack a heartbeat message into buffer
+ * @return Total packet length
+ */
 static inline uint16_t mavlink_msg_heartbeat_pack(uint8_t system_id, uint8_t component_id,
                                                    uint8_t *buf, uint8_t type, uint8_t autopilot,
                                                    uint8_t base_mode, uint32_t custom_mode,
@@ -437,4 +336,4 @@ static inline uint16_t mavlink_msg_heartbeat_pack(uint8_t system_id, uint8_t com
     return 21;  // Total packet length
 }
 
-#endif // MAVLINK_H
+#endif // MAVESPSTM_MAVLINK_MESSAGES_H

@@ -1,10 +1,18 @@
-#ifndef MAVLINK_TYPES_H
-#define MAVLINK_TYPES_H
+/**
+ * @file mavlink_types.h
+ * @brief MAVLink type definitions and constants
+ */
+
+#ifndef MAVESPSTM_MAVLINK_TYPES_H
+#define MAVESPSTM_MAVLINK_TYPES_H
 
 #include <stdint.h>
 #include <stdbool.h>
 
-// MAVLink 2 protocol constants
+// ============================================================================
+// MAVLink 2 Protocol Constants
+// ============================================================================
+
 #define MAVLINK_STX_V2 0xFD
 #define MAVLINK_STX_V1 0xFE
 #define MAVLINK_MAX_PAYLOAD_LEN 255
@@ -16,27 +24,67 @@
 #define MAVLINK_NUM_NON_PAYLOAD_BYTES (MAVLINK_NUM_HEADER_BYTES + MAVLINK_NUM_CHECKSUM_BYTES)
 #define MAVLINK_MAX_PACKET_LEN (MAVLINK_MAX_PAYLOAD_LEN + MAVLINK_NUM_NON_PAYLOAD_BYTES + MAVLINK_SIGNATURE_BLOCK_LEN)
 
-// MAVLink message IDs
-#define MAVLINK_MSG_ID_HEARTBEAT 0
+// ============================================================================
+// MAVLink Message IDs
+// ============================================================================
 
-// MAVLink component IDs
+#define MAVLINK_MSG_ID_HEARTBEAT 0
+#define MAVLINK_MSG_ID_SYS_STATUS 1
+#define MAVLINK_MSG_ID_SYSTEM_TIME 2
+#define MAVLINK_MSG_ID_ATTITUDE 30
+#define MAVLINK_MSG_ID_GLOBAL_POSITION_INT 33
+#define MAVLINK_MSG_ID_RC_CHANNELS 65
+#define MAVLINK_MSG_ID_VFR_HUD 74
+#define MAVLINK_MSG_ID_COMMAND_LONG 76
+#define MAVLINK_MSG_ID_COMMAND_ACK 77
+
+// ============================================================================
+// MAVLink Component IDs
+// ============================================================================
+
+#define MAV_COMP_ID_ALL 0
 #define MAV_COMP_ID_AUTOPILOT1 1
 #define MAV_COMP_ID_ONBOARD_COMPUTER 191
+#define MAV_COMP_ID_ONBOARD_COMPUTER2 192
+#define MAV_COMP_ID_ONBOARD_COMPUTER3 193
+#define MAV_COMP_ID_ONBOARD_COMPUTER4 194
 
-// MAVLink system types
+// ============================================================================
+// MAVLink System Types (MAV_TYPE)
+// ============================================================================
+
+#define MAV_TYPE_GENERIC 0
+#define MAV_TYPE_FIXED_WING 1
 #define MAV_TYPE_QUADROTOR 2
+#define MAV_TYPE_COAXIAL 3
+#define MAV_TYPE_HELICOPTER 4
+#define MAV_TYPE_GROUND_ROVER 10
+#define MAV_TYPE_SUBMARINE 12
+#define MAV_TYPE_HEXAROTOR 13
+#define MAV_TYPE_OCTOROTOR 14
 #define MAV_TYPE_ONBOARD_CONTROLLER 18
+#define MAV_TYPE_GCS 6
 
-// MAVLink autopilot types
+// ============================================================================
+// MAVLink Autopilot Types (MAV_AUTOPILOT)
+// ============================================================================
+
 #define MAV_AUTOPILOT_GENERIC 0
 #define MAV_AUTOPILOT_ARDUPILOTMEGA 3
 #define MAV_AUTOPILOT_PX4 12
 
-// MAVLink modes
+// ============================================================================
+// MAVLink Modes
+// ============================================================================
+
 #define MAV_MODE_FLAG_CUSTOM_MODE_ENABLED 1
+#define MAV_MODE_FLAG_SAFETY_ARMED 128
 #define MAV_MODE_PREFLIGHT 0
 
-// MAVLink states
+// ============================================================================
+// MAVLink System States (MAV_STATE)
+// ============================================================================
+
 #define MAV_STATE_UNINIT 0
 #define MAV_STATE_BOOT 1
 #define MAV_STATE_CALIBRATING 2
@@ -47,7 +95,10 @@
 #define MAV_STATE_POWEROFF 7
 #define MAV_STATE_FLIGHT_TERMINATION 8
 
-// Parse states
+// ============================================================================
+// Parser States
+// ============================================================================
+
 typedef enum {
     MAVLINK_PARSE_STATE_UNINIT = 0,
     MAVLINK_PARSE_STATE_IDLE,
@@ -74,7 +125,10 @@ typedef enum {
     MAVLINK_FRAMING_BAD_SIGNATURE = 3
 } mavlink_framing_t;
 
-// MAVLink message structure
+// ============================================================================
+// MAVLink Message Structure
+// ============================================================================
+
 typedef struct __mavlink_message {
     uint16_t checksum;      // Checksum
     uint8_t magic;          // Protocol magic marker
@@ -90,7 +144,10 @@ typedef struct __mavlink_message {
     uint8_t signature[MAVLINK_SIGNATURE_BLOCK_LEN];
 } mavlink_message_t;
 
-// MAVLink status structure
+// ============================================================================
+// MAVLink Status Structure
+// ============================================================================
+
 typedef struct __mavlink_status {
     uint8_t msg_received;
     uint8_t buffer_overrun;
@@ -107,17 +164,4 @@ typedef struct __mavlink_status {
     struct __mavlink_signing_streams *signing_streams;
 } mavlink_status_t;
 
-// Heartbeat message structure
-typedef struct __mavlink_heartbeat_t {
-    uint32_t custom_mode;   // Custom mode
-    uint8_t type;           // Vehicle type
-    uint8_t autopilot;      // Autopilot type
-    uint8_t base_mode;      // Base mode
-    uint8_t system_status;  // System status
-    uint8_t mavlink_version; // MAVLink version
-} mavlink_heartbeat_t;
-
-#define MAVLINK_MSG_ID_HEARTBEAT_LEN 9
-#define MAVLINK_MSG_ID_HEARTBEAT_CRC 50
-
-#endif // MAVLINK_TYPES_H
+#endif // MAVESPSTM_MAVLINK_TYPES_H
