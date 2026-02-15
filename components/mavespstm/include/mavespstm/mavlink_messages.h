@@ -19,6 +19,34 @@
 #define MAVLINK_MSG_ID_ATTITUDE_CRC 39
 #define MAVLINK_MSG_ID_ATTITUDE_LEN 28
 
+#define MAVLINK_MSG_ID_SET_MODE 11
+#define MAVLINK_MSG_ID_SET_MODE_CRC 89
+#define MAVLINK_MSG_ID_SET_MODE_LEN 6
+
+#define MAVLINK_MSG_ID_COMMAND_LONG 76
+#define MAVLINK_MSG_ID_COMMAND_LONG_CRC 152
+#define MAVLINK_MSG_ID_COMMAND_LONG_LEN 33
+
+#define MAVLINK_MSG_ID_COMMAND_ACK 77
+#define MAVLINK_MSG_ID_COMMAND_ACK_CRC 143
+#define MAVLINK_MSG_ID_COMMAND_ACK_LEN 3
+
+#define MAVLINK_MSG_ID_STATUSTEXT 253
+#define MAVLINK_MSG_ID_STATUSTEXT_CRC 83
+#define MAVLINK_MSG_ID_STATUSTEXT_LEN 54
+
+// MAVLink Commands
+#define MAV_CMD_COMPONENT_ARM_DISARM 400
+#define MAV_CMD_DO_SET_MODE 176
+
+// MAVLink Command Results
+#define MAV_RESULT_ACCEPTED 0
+#define MAV_RESULT_TEMPORARILY_REJECTED 1
+#define MAV_RESULT_DENIED 2
+#define MAV_RESULT_UNSUPPORTED 3
+#define MAV_RESULT_FAILED 4
+#define MAV_RESULT_IN_PROGRESS 5
+
 // ============================================================================
 // Message Structures
 // ============================================================================
@@ -48,6 +76,39 @@ typedef struct __mavlink_attitude_t {
     float pitchspeed;        // Pitch angular speed [rad/s]
     float yawspeed;          // Yaw angular speed [rad/s]
 } mavlink_attitude_t;
+
+/**
+ * @brief COMMAND_LONG message structure (MSG ID 76)
+ */
+typedef struct __mavlink_command_long_t {
+    float param1;
+    float param2;
+    float param3;
+    float param4;
+    float param5;
+    float param6;
+    float param7;
+    uint16_t command;
+    uint8_t target_system;
+    uint8_t target_component;
+    uint8_t confirmation;
+} mavlink_command_long_t;
+
+/**
+ * @brief COMMAND_ACK message structure (MSG ID 77)
+ */
+typedef struct __mavlink_command_ack_t {
+    uint16_t command;
+    uint8_t result;
+} mavlink_command_ack_t;
+
+/**
+ * @brief STATUSTEXT message structure (MSG ID 253)
+ */
+typedef struct __mavlink_statustext_t {
+    uint8_t severity;
+    char text[50];
+} mavlink_statustext_t;
 
 // ============================================================================
 // CRC Extra Lookup Function
@@ -334,6 +395,220 @@ static inline uint16_t mavlink_msg_heartbeat_pack(uint8_t system_id, uint8_t com
     buf[20] = (crc >> 8) & 0xFF;
     
     return 21;  // Total packet length
+}
+
+// ============================================================================
+// Attitude Message Functions
+// ============================================================================
+
+/**
+ * @brief Helper to decode a float from payload bytes (little-endian)
+ */
+static inline float mavlink_decode_float(const uint8_t *payload, uint8_t offset) {
+    union {
+        uint32_t i;
+        float f;
+    } u;
+    u.i = payload[offset] | (payload[offset+1] << 8) | 
+          (payload[offset+2] << 16) | (payload[offset+3] << 24);
+    return u.f;
+}
+
+/**
+ * @brief Decode attitude message from a MAVLink message
+ */
+static inline void mavlink_msg_attitude_decode(const mavlink_message_t *msg, mavlink_attitude_t *attitude) {
+    const uint8_t *payload = (const uint8_t *)msg->payload64;
+    
+    attitude->time_boot_ms = payload[0] | (payload[1] << 8) | 
+                             (payload[2] << 16) | (payload[3] << 24);
+    attitude->roll = mavlink_decode_float(payload, 4);
+    attitude->pitch = mavlink_decode_float(payload, 8);
+    attitude->yaw = mavlink_decode_float(payload, 12);
+    attitude->rollspeed = mavlink_decode_float(payload, 16);
+    attitude->pitchspeed = mavlink_decode_float(payload, 20);
+    attitude->yawspeed = mavlink_decode_float(payload, 24);
+}
+
+/**
+ * @brief Convert radians to degrees
+ */
+static inline float mavlink_rad_to_deg(float rad) {
+    return rad * 57.295779513f;  // 180/PI
+}
+
+// ============================================================================
+// COMMAND_LONG Message Functions
+// ============================================================================
+
+/**
+ * @brief Helper to encode a float into payload bytes (little-endian)
+ */
+static inline void mavlink_encode_float(uint8_t *payload, uint8_t offset, float value) {
+    union {
+        uint32_t i;
+        float f;
+    } u;
+    u.f = value;
+    payload[offset] = u.i & 0xFF;
+    payload[offset+1] = (u.i >> 8) & 0xFF;
+    payload[offset+2] = (u.i >> 16) & 0xFF;
+    payload[offset+3] = (u.i >> 24) & 0xFF;
+}
+
+/**
+ * @brief Pack a COMMAND_LONG message into buffer
+ * @return Total packet length
+ */
+static inline uint16_t mavlink_msg_command_long_pack(uint8_t system_id, uint8_t component_id,
+                                                     uint8_t *buf, uint8_t target_system,
+                                                     uint8_t target_component, uint16_t command,
+                                                     uint8_t confirmation, float param1,
+                                                     float param2, float param3, float param4,
+                                                     float param5, float param6, float param7) {
+    uint16_t crc;
+    
+    buf[0] = MAVLINK_STX_V2;   // Magic
+    buf[1] = 33;               // Payload length
+    buf[2] = 0;                // Incompat flags
+    buf[3] = 0;                // Compat flags
+    buf[4] = 0;                // Seq (will be filled by caller)
+    buf[5] = system_id;        // System ID
+    buf[6] = component_id;     // Component ID
+    buf[7] = 76;               // Message ID low byte (COMMAND_LONG = 76)
+    buf[8] = 0;                // Message ID mid byte
+    buf[9] = 0;                // Message ID high byte
+    
+    // Payload (wire order: floats first, then command, target_system, target_component, confirmation)
+    mavlink_encode_float(buf, 10, param1);
+    mavlink_encode_float(buf, 14, param2);
+    mavlink_encode_float(buf, 18, param3);
+    mavlink_encode_float(buf, 22, param4);
+    mavlink_encode_float(buf, 26, param5);
+    mavlink_encode_float(buf, 30, param6);
+    mavlink_encode_float(buf, 34, param7);
+    buf[38] = command & 0xFF;
+    buf[39] = (command >> 8) & 0xFF;
+    buf[40] = target_system;
+    buf[41] = target_component;
+    buf[42] = confirmation;
+    
+    // Calculate CRC
+    crc_init(&crc);
+    for (int i = 1; i <= 42; i++) {
+        crc_accumulate(buf[i], &crc);
+    }
+    crc_accumulate(MAVLINK_MSG_ID_COMMAND_LONG_CRC, &crc);
+    
+    buf[43] = crc & 0xFF;
+    buf[44] = (crc >> 8) & 0xFF;
+    
+    return 45;  // Total packet length
+}
+
+// ============================================================================
+// COMMAND_ACK Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode COMMAND_ACK message from a MAVLink message
+ */
+static inline void mavlink_msg_command_ack_decode(const mavlink_message_t *msg, mavlink_command_ack_t *ack) {
+    const uint8_t *payload = (const uint8_t *)msg->payload64;
+    ack->command = payload[0] | (payload[1] << 8);
+    ack->result = payload[2];
+}
+
+/**
+ * @brief Get result string for COMMAND_ACK
+ */
+static inline const char* mavlink_result_to_string(uint8_t result) {
+    switch (result) {
+        case MAV_RESULT_ACCEPTED: return "ACCEPTED";
+        case MAV_RESULT_TEMPORARILY_REJECTED: return "TEMPORARILY_REJECTED";
+        case MAV_RESULT_DENIED: return "DENIED";
+        case MAV_RESULT_UNSUPPORTED: return "UNSUPPORTED";
+        case MAV_RESULT_FAILED: return "FAILED";
+        case MAV_RESULT_IN_PROGRESS: return "IN_PROGRESS";
+        default: return "UNKNOWN";
+    }
+}
+
+// ============================================================================
+// SET_MODE Message Functions
+// ============================================================================
+
+/**
+ * @brief Pack a SET_MODE message into buffer
+ * @return Total packet length
+ */
+static inline uint16_t mavlink_msg_set_mode_pack(uint8_t system_id, uint8_t component_id,
+                                                  uint8_t *buf, uint8_t target_system,
+                                                  uint8_t base_mode, uint32_t custom_mode) {
+    uint16_t crc;
+    
+    buf[0] = MAVLINK_STX_V2;   // Magic
+    buf[1] = 6;                // Payload length
+    buf[2] = 0;                // Incompat flags
+    buf[3] = 0;                // Compat flags
+    buf[4] = 0;                // Seq
+    buf[5] = system_id;        // System ID
+    buf[6] = component_id;     // Component ID
+    buf[7] = 11;               // Message ID low byte (SET_MODE = 11)
+    buf[8] = 0;                // Message ID mid byte
+    buf[9] = 0;                // Message ID high byte
+    
+    // Payload (wire order: custom_mode first, then base_mode, target_system)
+    buf[10] = custom_mode & 0xFF;
+    buf[11] = (custom_mode >> 8) & 0xFF;
+    buf[12] = (custom_mode >> 16) & 0xFF;
+    buf[13] = (custom_mode >> 24) & 0xFF;
+    buf[14] = base_mode;
+    buf[15] = target_system;
+    
+    // Calculate CRC
+    crc_init(&crc);
+    for (int i = 1; i <= 15; i++) {
+        crc_accumulate(buf[i], &crc);
+    }
+    crc_accumulate(MAVLINK_MSG_ID_SET_MODE_CRC, &crc);
+    
+    buf[16] = crc & 0xFF;
+    buf[17] = (crc >> 8) & 0xFF;
+    
+    return 18;  // Total packet length
+}
+
+// ============================================================================
+// STATUSTEXT Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode STATUSTEXT message from a MAVLink message
+ */
+static inline void mavlink_msg_statustext_decode(const mavlink_message_t *msg, mavlink_statustext_t *statustext) {
+    const uint8_t *payload = (const uint8_t *)msg->payload64;
+    statustext->severity = payload[0];
+    for (int i = 0; i < 50; i++) {
+        statustext->text[i] = payload[1 + i];
+    }
+}
+
+/**
+ * @brief Get severity string for STATUSTEXT
+ */
+static inline const char* mavlink_severity_to_string(uint8_t severity) {
+    switch (severity) {
+        case 0: return "EMERGENCY";
+        case 1: return "ALERT";
+        case 2: return "CRITICAL";
+        case 3: return "ERROR";
+        case 4: return "WARNING";
+        case 5: return "NOTICE";
+        case 6: return "INFO";
+        case 7: return "DEBUG";
+        default: return "UNKNOWN";
+    }
 }
 
 #endif // MAVESPSTM_MAVLINK_MESSAGES_H

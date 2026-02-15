@@ -31,12 +31,14 @@
 #define MAVLINK_MSG_ID_HEARTBEAT 0
 #define MAVLINK_MSG_ID_SYS_STATUS 1
 #define MAVLINK_MSG_ID_SYSTEM_TIME 2
+#define MAVLINK_MSG_ID_SET_MODE 11
 #define MAVLINK_MSG_ID_ATTITUDE 30
 #define MAVLINK_MSG_ID_GLOBAL_POSITION_INT 33
 #define MAVLINK_MSG_ID_RC_CHANNELS 65
 #define MAVLINK_MSG_ID_VFR_HUD 74
 #define MAVLINK_MSG_ID_COMMAND_LONG 76
 #define MAVLINK_MSG_ID_COMMAND_ACK 77
+#define MAVLINK_MSG_ID_STATUSTEXT 253
 
 // ============================================================================
 // MAVLink Component IDs
