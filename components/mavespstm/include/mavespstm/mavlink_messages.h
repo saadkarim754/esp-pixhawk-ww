@@ -31,6 +31,15 @@
 #define MAVLINK_MSG_ID_COMMAND_ACK_CRC 143
 #define MAVLINK_MSG_ID_COMMAND_ACK_LEN 3
 
+#define MAVLINK_MSG_ID_PARAM_SET_CRC 168
+#define MAVLINK_MSG_ID_PARAM_SET_LEN 23
+
+#define MAVLINK_MSG_ID_PARAM_VALUE_CRC 220
+#define MAVLINK_MSG_ID_PARAM_VALUE_LEN 25
+
+#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_CRC 124
+#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_LEN 18
+
 #define MAVLINK_MSG_ID_STATUSTEXT 253
 #define MAVLINK_MSG_ID_STATUSTEXT_CRC 83
 #define MAVLINK_MSG_ID_STATUSTEXT_LEN 54
@@ -109,6 +118,44 @@ typedef struct __mavlink_statustext_t {
     uint8_t severity;
     char text[50];
 } mavlink_statustext_t;
+
+/**
+ * @brief PARAM_SET message structure (MSG ID 23)
+ */
+typedef struct __mavlink_param_set_t {
+    float param_value;
+    uint8_t target_system;
+    uint8_t target_component;
+    char param_id[16];
+    uint8_t param_type;
+} mavlink_param_set_t;
+
+/**
+ * @brief PARAM_VALUE message structure (MSG ID 22)
+ */
+typedef struct __mavlink_param_value_t {
+    float param_value;
+    uint16_t param_count;
+    uint16_t param_index;
+    char param_id[16];
+    uint8_t param_type;
+} mavlink_param_value_t;
+
+/**
+ * @brief RC_CHANNELS_OVERRIDE message structure (MSG ID 70)
+ */
+typedef struct __mavlink_rc_channels_override_t {
+    uint16_t chan1_raw;
+    uint16_t chan2_raw;
+    uint16_t chan3_raw;
+    uint16_t chan4_raw;
+    uint16_t chan5_raw;
+    uint16_t chan6_raw;
+    uint16_t chan7_raw;
+    uint16_t chan8_raw;
+    uint8_t target_system;
+    uint8_t target_component;
+} mavlink_rc_channels_override_t;
 
 // ============================================================================
 // CRC Extra Lookup Function
@@ -609,6 +656,128 @@ static inline const char* mavlink_severity_to_string(uint8_t severity) {
         case 7: return "DEBUG";
         default: return "UNKNOWN";
     }
+}
+
+// ============================================================================
+// PARAM_SET Message Functions
+// ============================================================================
+
+/**
+ * @brief Pack a PARAM_SET message into buffer
+ * Wire order: param_value(float), target_system(u8), target_component(u8),
+ *             param_id(char[16]), param_type(u8)
+ * @return Total packet length
+ */
+static inline uint16_t mavlink_msg_param_set_pack(uint8_t system_id, uint8_t component_id,
+                                                   uint8_t *buf, uint8_t target_system,
+                                                   uint8_t target_component,
+                                                   const char *param_id, float param_value,
+                                                   uint8_t param_type) {
+    uint16_t crc;
+    
+    buf[0] = MAVLINK_STX_V2;
+    buf[1] = 23;               // Payload length
+    buf[2] = 0;
+    buf[3] = 0;
+    buf[4] = 0;                // Seq
+    buf[5] = system_id;
+    buf[6] = component_id;
+    buf[7] = 23;               // Message ID low (PARAM_SET = 23)
+    buf[8] = 0;
+    buf[9] = 0;
+    
+    // Payload
+    mavlink_encode_float(buf, 10, param_value);  // param_value at 10-13
+    buf[14] = target_system;                      // target_system at 14
+    buf[15] = target_component;                   // target_component at 15
+    memset(&buf[16], 0, 16);                      // param_id at 16-31
+    strncpy((char *)&buf[16], param_id, 16);
+    buf[32] = param_type;                         // param_type at 32
+    
+    // CRC over bytes 1 through 32
+    crc_init(&crc);
+    for (int i = 1; i <= 32; i++) {
+        crc_accumulate(buf[i], &crc);
+    }
+    crc_accumulate(MAVLINK_MSG_ID_PARAM_SET_CRC, &crc);
+    
+    buf[33] = crc & 0xFF;
+    buf[34] = (crc >> 8) & 0xFF;
+    
+    return 35;
+}
+
+// ============================================================================
+// PARAM_VALUE Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode PARAM_VALUE message from a MAVLink message
+ * Wire order: param_value(float), param_count(u16), param_index(u16),
+ *             param_id(char[16]), param_type(u8)
+ */
+static inline void mavlink_msg_param_value_decode(const mavlink_message_t *msg,
+                                                   mavlink_param_value_t *param) {
+    const uint8_t *payload = (const uint8_t *)msg->payload64;
+    param->param_value = mavlink_decode_float(payload, 0);
+    param->param_count = payload[4] | (payload[5] << 8);
+    param->param_index = payload[6] | (payload[7] << 8);
+    memcpy(param->param_id, &payload[8], 16);
+    param->param_id[15] = '\0';
+    param->param_type = payload[24];
+}
+
+// ============================================================================
+// RC_CHANNELS_OVERRIDE Message Functions
+// ============================================================================
+
+/**
+ * @brief Pack RC_CHANNELS_OVERRIDE message into buffer
+ * Wire order: chan1-chan8(u16 each), target_system(u8), target_component(u8)
+ * @return Total packet length
+ */
+static inline uint16_t mavlink_msg_rc_channels_override_pack(
+    uint8_t system_id, uint8_t component_id, uint8_t *buf,
+    uint8_t target_system, uint8_t target_component,
+    uint16_t chan1, uint16_t chan2, uint16_t chan3, uint16_t chan4,
+    uint16_t chan5, uint16_t chan6, uint16_t chan7, uint16_t chan8) {
+    
+    uint16_t crc;
+    
+    buf[0] = MAVLINK_STX_V2;
+    buf[1] = 18;               // Payload length
+    buf[2] = 0;
+    buf[3] = 0;
+    buf[4] = 0;                // Seq
+    buf[5] = system_id;
+    buf[6] = component_id;
+    buf[7] = 70;               // Message ID low (RC_CHANNELS_OVERRIDE = 70)
+    buf[8] = 0;
+    buf[9] = 0;
+    
+    // Payload: uint16 channels first, then uint8 targets
+    buf[10] = chan1 & 0xFF; buf[11] = (chan1 >> 8) & 0xFF;
+    buf[12] = chan2 & 0xFF; buf[13] = (chan2 >> 8) & 0xFF;
+    buf[14] = chan3 & 0xFF; buf[15] = (chan3 >> 8) & 0xFF;
+    buf[16] = chan4 & 0xFF; buf[17] = (chan4 >> 8) & 0xFF;
+    buf[18] = chan5 & 0xFF; buf[19] = (chan5 >> 8) & 0xFF;
+    buf[20] = chan6 & 0xFF; buf[21] = (chan6 >> 8) & 0xFF;
+    buf[22] = chan7 & 0xFF; buf[23] = (chan7 >> 8) & 0xFF;
+    buf[24] = chan8 & 0xFF; buf[25] = (chan8 >> 8) & 0xFF;
+    buf[26] = target_system;
+    buf[27] = target_component;
+    
+    // CRC over bytes 1 through 27
+    crc_init(&crc);
+    for (int i = 1; i <= 27; i++) {
+        crc_accumulate(buf[i], &crc);
+    }
+    crc_accumulate(MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_CRC, &crc);
+    
+    buf[28] = crc & 0xFF;
+    buf[29] = (crc >> 8) & 0xFF;
+    
+    return 30;
 }
 
 #endif // MAVESPSTM_MAVLINK_MESSAGES_H

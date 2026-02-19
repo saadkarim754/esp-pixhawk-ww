@@ -34,7 +34,10 @@
 #define MAVLINK_MSG_ID_SET_MODE 11
 #define MAVLINK_MSG_ID_ATTITUDE 30
 #define MAVLINK_MSG_ID_GLOBAL_POSITION_INT 33
+#define MAVLINK_MSG_ID_PARAM_VALUE 22
+#define MAVLINK_MSG_ID_PARAM_SET 23
 #define MAVLINK_MSG_ID_RC_CHANNELS 65
+#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE 70
 #define MAVLINK_MSG_ID_VFR_HUD 74
 #define MAVLINK_MSG_ID_COMMAND_LONG 76
 #define MAVLINK_MSG_ID_COMMAND_ACK 77
@@ -82,6 +85,12 @@
 #define MAV_MODE_FLAG_CUSTOM_MODE_ENABLED 1
 #define MAV_MODE_FLAG_SAFETY_ARMED 128
 #define MAV_MODE_PREFLIGHT 0
+
+// MAVLink Parameter Types
+#define MAV_PARAM_TYPE_REAL32 9
+
+// Force arm magic value
+#define MAV_ARM_FORCE_MAGIC 21196
 
 // ============================================================================
 // MAVLink System States (MAV_STATE)
