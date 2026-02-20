@@ -191,7 +191,25 @@ static void uart_init(void) {
 
 static void send_mavlink_message(uint8_t *buf, uint16_t len) {
     if (xSemaphoreTake(uart_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // Set sequence number THEN recompute CRC.
+        // The pack functions compute CRC with seq=0, but CRC covers bytes 1..9+payload
+        // which includes byte 4 (seq). Changing seq after CRC = invalid CRC = silent drop.
         buf[4] = tx_seq++;
+        
+        // Recompute CRC over header + payload (bytes 1 through 9+payload_len)
+        uint8_t payload_len = buf[1];
+        uint32_t msgid = buf[7] | ((uint32_t)buf[8] << 8) | ((uint32_t)buf[9] << 16);
+        
+        uint16_t crc;
+        crc_init(&crc);
+        for (int i = 1; i < 10 + payload_len; i++) {
+            crc_accumulate(buf[i], &crc);
+        }
+        crc_accumulate(mavlink_get_crc_extra(msgid), &crc);
+        
+        buf[10 + payload_len] = crc & 0xFF;
+        buf[10 + payload_len + 1] = (crc >> 8) & 0xFF;
+        
         int written = uart_write_bytes(PIXHAWK_UART_NUM, buf, len);
         if (written != len) {
             ESP_LOGW(TAG, "UART write incomplete: %d/%d bytes", written, len);
@@ -208,11 +226,13 @@ static void send_mavlink_message(uint8_t *buf, uint16_t len) {
 
 static void send_heartbeat(void) {
     uint8_t buf[32];
+    // Send as MAV_TYPE_GCS (6) — ArduPilot grants full command authority to GCS type.
+    // MAV_TYPE_ONBOARD_CONTROLLER (18) may have restricted command permissions.
     uint16_t len = mavlink_msg_heartbeat_pack(
         COMPANION_SYSTEM_ID,
         COMPANION_COMPONENT_ID,
         buf,
-        MAV_TYPE_ONBOARD_CONTROLLER,
+        MAV_TYPE_GCS,
         MAV_AUTOPILOT_GENERIC,
         0, 0,
         MAV_STATE_ACTIVE
@@ -230,12 +250,13 @@ static void send_arm_command(bool arm, bool force) {
     float arm_param = arm ? 1.0f : 0.0f;
     float force_param = force ? (float)MAV_ARM_FORCE_MAGIC : 0.0f;
     
+    // target_component=0 per ArduPilot wiki (broadcast to all components)
     uint16_t len = mavlink_msg_command_long_pack(
         COMPANION_SYSTEM_ID,
         COMPANION_COMPONENT_ID,
         buf,
         PIXHAWK_SYSTEM_ID,
-        PIXHAWK_COMPONENT_ID,
+        0,                  // target_component=0 (broadcast)
         MAV_CMD_COMPONENT_ARM_DISARM,
         0,              // confirmation
         arm_param,      // param1: 1=arm, 0=disarm
@@ -288,7 +309,7 @@ static void send_param_set(const char *param_id, float value) {
         COMPANION_COMPONENT_ID,
         buf,
         PIXHAWK_SYSTEM_ID,
-        PIXHAWK_COMPONENT_ID,
+        0,                  // target_component=0 (broadcast)
         param_id,
         value,
         MAV_PARAM_TYPE_REAL32
@@ -312,7 +333,7 @@ static void send_rc_override_throttle_low(void) {
         COMPANION_COMPONENT_ID,
         buf,
         PIXHAWK_SYSTEM_ID,
-        PIXHAWK_COMPONENT_ID,
+        0,                  // target_component=0 (broadcast)
         0,      // chan1: don't override
         0,      // chan2: don't override
         1000,   // chan3: throttle = minimum (1000us)
