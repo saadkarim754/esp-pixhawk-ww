@@ -40,6 +40,18 @@
 #define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_CRC 124
 #define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_LEN 18
 
+#define MAVLINK_MSG_ID_GPS_RAW_INT_CRC 24
+#define MAVLINK_MSG_ID_GPS_RAW_INT_LEN 30
+
+#define MAVLINK_MSG_ID_SCALED_PRESSURE_CRC 115
+#define MAVLINK_MSG_ID_SCALED_PRESSURE_LEN 14
+
+#define MAVLINK_MSG_ID_VFR_HUD_CRC 20
+#define MAVLINK_MSG_ID_VFR_HUD_LEN 20
+
+#define MAVLINK_MSG_ID_GLOBAL_POSITION_INT_CRC 104
+#define MAVLINK_MSG_ID_GLOBAL_POSITION_INT_LEN 28
+
 #define MAVLINK_MSG_ID_STATUSTEXT 253
 #define MAVLINK_MSG_ID_STATUSTEXT_CRC 83
 #define MAVLINK_MSG_ID_STATUSTEXT_LEN 54
@@ -156,6 +168,63 @@ typedef struct __mavlink_rc_channels_override_t {
     uint8_t target_system;
     uint8_t target_component;
 } mavlink_rc_channels_override_t;
+
+/**
+ * @brief GPS_RAW_INT message structure (MSG ID 24)
+ * Raw GPS data from the sensor
+ */
+typedef struct __mavlink_gps_raw_int_t {
+    uint64_t time_usec;          // Timestamp (UNIX epoch) [us]
+    int32_t lat;                 // Latitude (WGS84, degE7)
+    int32_t lon;                 // Longitude (WGS84, degE7)
+    int32_t alt;                 // Altitude MSL [mm]
+    uint16_t eph;                // GPS HDOP * 100
+    uint16_t epv;                // GPS VDOP * 100
+    uint16_t vel;                // Ground speed [cm/s]
+    uint16_t cog;                // Course over ground [cdeg]
+    uint8_t fix_type;            // GPS fix type: 0=no, 1=no fix, 2=2D, 3=3D, 4=DGPS, 5=RTK float, 6=RTK fixed
+    uint8_t satellites_visible;  // Number of satellites visible
+} mavlink_gps_raw_int_t;
+
+/**
+ * @brief SCALED_PRESSURE message structure (MSG ID 29)
+ * Barometric pressure and temperature
+ */
+typedef struct __mavlink_scaled_pressure_t {
+    uint32_t time_boot_ms;   // Timestamp [ms since boot]
+    float press_abs;         // Absolute pressure [hPa / millibar]
+    float press_diff;        // Differential pressure [hPa]
+    int16_t temperature;     // Temperature [cdegC] (centi-degrees)
+} mavlink_scaled_pressure_t;
+
+/**
+ * @brief VFR_HUD message structure (MSG ID 74)
+ * Metrics typically displayed on a heads-up display
+ */
+typedef struct __mavlink_vfr_hud_t {
+    float airspeed;       // Current airspeed [m/s]
+    float groundspeed;    // Current ground speed [m/s]
+    float alt;            // Current altitude MSL [m]
+    float climb;          // Current climb rate [m/s]
+    int16_t heading;      // Current heading [deg] 0..359
+    uint16_t throttle;    // Current throttle [%] 0..100
+} mavlink_vfr_hud_t;
+
+/**
+ * @brief GLOBAL_POSITION_INT message structure (MSG ID 33)
+ * Fused GPS + IMU position estimate
+ */
+typedef struct __mavlink_global_position_int_t {
+    uint32_t time_boot_ms;  // Timestamp [ms since boot]
+    int32_t lat;            // Latitude (WGS84, degE7)
+    int32_t lon;            // Longitude (WGS84, degE7)
+    int32_t alt;            // Altitude MSL [mm]
+    int32_t relative_alt;   // Altitude above home [mm]
+    int16_t vx;             // Ground speed X (North) [cm/s]
+    int16_t vy;             // Ground speed Y (East) [cm/s]
+    int16_t vz;             // Ground speed Z (Down) [cm/s]
+    uint16_t hdg;           // Vehicle heading [cdeg] 0..35999
+} mavlink_global_position_int_t;
 
 // ============================================================================
 // CRC Extra Lookup Function
@@ -778,6 +847,130 @@ static inline uint16_t mavlink_msg_rc_channels_override_pack(
     buf[29] = (crc >> 8) & 0xFF;
     
     return 30;
+}
+
+// ============================================================================
+// GPS_RAW_INT Message Functions
+// ============================================================================
+
+/**
+ * @brief Helper to decode int32 from payload bytes (little-endian)
+ */
+static inline int32_t mavlink_decode_int32(const uint8_t *payload, uint8_t offset) {
+    return (int32_t)(payload[offset] | (payload[offset+1] << 8) |
+                     (payload[offset+2] << 16) | (payload[offset+3] << 24));
+}
+
+/**
+ * @brief Helper to decode uint16 from payload bytes (little-endian)
+ */
+static inline uint16_t mavlink_decode_uint16(const uint8_t *payload, uint8_t offset) {
+    return (uint16_t)(payload[offset] | (payload[offset+1] << 8));
+}
+
+/**
+ * @brief Helper to decode int16 from payload bytes (little-endian)
+ */
+static inline int16_t mavlink_decode_int16(const uint8_t *payload, uint8_t offset) {
+    return (int16_t)(payload[offset] | (payload[offset+1] << 8));
+}
+
+/**
+ * @brief Decode GPS_RAW_INT message (MSG ID 24)
+ * Wire order: time_usec(u64), lat(i32), lon(i32), alt(i32), eph(u16), epv(u16),
+ *             vel(u16), cog(u16), fix_type(u8), satellites_visible(u8)
+ */
+static inline void mavlink_msg_gps_raw_int_decode(const mavlink_message_t *msg,
+                                                    mavlink_gps_raw_int_t *gps) {
+    const uint8_t *p = (const uint8_t *)msg->payload64;
+    gps->time_usec = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) |
+                     ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
+                     ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+    gps->lat = mavlink_decode_int32(p, 8);
+    gps->lon = mavlink_decode_int32(p, 12);
+    gps->alt = mavlink_decode_int32(p, 16);
+    gps->eph = mavlink_decode_uint16(p, 20);
+    gps->epv = mavlink_decode_uint16(p, 22);
+    gps->vel = mavlink_decode_uint16(p, 24);
+    gps->cog = mavlink_decode_uint16(p, 26);
+    gps->fix_type = p[28];
+    gps->satellites_visible = p[29];
+}
+
+/**
+ * @brief Get GPS fix type string
+ */
+static inline const char* mavlink_gps_fix_type_string(uint8_t fix_type) {
+    switch (fix_type) {
+        case 0: return "No GPS";
+        case 1: return "No Fix";
+        case 2: return "2D Fix";
+        case 3: return "3D Fix";
+        case 4: return "DGPS";
+        case 5: return "RTK Float";
+        case 6: return "RTK Fixed";
+        default: return "Unknown";
+    }
+}
+
+// ============================================================================
+// SCALED_PRESSURE Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode SCALED_PRESSURE message (MSG ID 29)
+ * Wire order: time_boot_ms(u32), press_abs(float), press_diff(float), temperature(i16)
+ */
+static inline void mavlink_msg_scaled_pressure_decode(const mavlink_message_t *msg,
+                                                       mavlink_scaled_pressure_t *press) {
+    const uint8_t *p = (const uint8_t *)msg->payload64;
+    press->time_boot_ms = (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+    press->press_abs = mavlink_decode_float(p, 4);
+    press->press_diff = mavlink_decode_float(p, 8);
+    press->temperature = mavlink_decode_int16(p, 12);
+}
+
+// ============================================================================
+// VFR_HUD Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode VFR_HUD message (MSG ID 74)
+ * Wire order: airspeed(float), groundspeed(float), alt(float), climb(float),
+ *             heading(i16), throttle(u16)
+ */
+static inline void mavlink_msg_vfr_hud_decode(const mavlink_message_t *msg,
+                                                mavlink_vfr_hud_t *hud) {
+    const uint8_t *p = (const uint8_t *)msg->payload64;
+    hud->airspeed = mavlink_decode_float(p, 0);
+    hud->groundspeed = mavlink_decode_float(p, 4);
+    hud->alt = mavlink_decode_float(p, 8);
+    hud->climb = mavlink_decode_float(p, 12);
+    hud->heading = mavlink_decode_int16(p, 16);
+    hud->throttle = mavlink_decode_uint16(p, 18);
+}
+
+// ============================================================================
+// GLOBAL_POSITION_INT Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode GLOBAL_POSITION_INT message (MSG ID 33)
+ * Wire order: time_boot_ms(u32), lat(i32), lon(i32), alt(i32), relative_alt(i32),
+ *             vx(i16), vy(i16), vz(i16), hdg(u16)
+ */
+static inline void mavlink_msg_global_position_int_decode(const mavlink_message_t *msg,
+                                                           mavlink_global_position_int_t *pos) {
+    const uint8_t *p = (const uint8_t *)msg->payload64;
+    pos->time_boot_ms = (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+    pos->lat = mavlink_decode_int32(p, 4);
+    pos->lon = mavlink_decode_int32(p, 8);
+    pos->alt = mavlink_decode_int32(p, 12);
+    pos->relative_alt = mavlink_decode_int32(p, 16);
+    pos->vx = mavlink_decode_int16(p, 20);
+    pos->vy = mavlink_decode_int16(p, 22);
+    pos->vz = mavlink_decode_int16(p, 24);
+    pos->hdg = mavlink_decode_uint16(p, 26);
 }
 
 #endif // MAVESPSTM_MAVLINK_MESSAGES_H
