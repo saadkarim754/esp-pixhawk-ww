@@ -996,6 +996,10 @@ static const char HTML_PAGE_PART1[] =
 ".log-entry{padding:1px 0;border-bottom:1px solid #161b22;color:#8b949e}\n"
 /* Footer */
 ".footer{text-align:center;color:#484f58;font-size:10px;margin-top:8px}\n"
+".card-collapse .card-hdr{cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;-webkit-user-select:none}\n"
+".card-collapse .card-hdr::after{content:'\\25BC';font-size:10px;color:#8b949e;transition:transform .2s}\n"
+".card-collapse.collapsed .card-hdr::after{transform:rotate(-90deg)}\n"
+".card-collapse.collapsed .card-body{display:none}\n"
 "</style>\n"
 "</head>\n"
 "<body>\n"
@@ -1017,19 +1021,22 @@ static const char HTML_PAGE_PART1[] =
 "</div>\n"
 "</div>\n"
 "\n"
-"<div class='card'>\n"
-"<h2>Attitude</h2>\n"
+"<div class='card card-collapse collapsed'>\n"
+"<h2 class='card-hdr' onclick='toggleCard(this)'>Attitude</h2>\n"
+"<div class='card-body'>\n"
 "<div class='att-row'>\n"
 "<div class='att-item'><div id='roll' class='att-value'>0.0&deg;</div><div class='att-label'>ROLL</div></div>\n"
 "<div class='att-item'><div id='pitch' class='att-value'>0.0&deg;</div><div class='att-label'>PITCH</div></div>\n"
 "<div class='att-item'><div id='yaw' class='att-value'>0.0&deg;</div><div class='att-label'>YAW</div></div>\n"
 "</div>\n"
 "</div>\n"
+"</div>\n"
 "\n";
 
 static const char HTML_PAGE_PART2[] =
-"<div class='card'>\n"
-"<h2>GPS</h2>\n"
+"<div class='card card-collapse collapsed'>\n"
+"<h2 class='card-hdr' onclick='toggleCard(this)'>GPS</h2>\n"
+"<div class='card-body'>\n"
 "<div class='data-grid cols3'>\n"
 "<div class='data-item'><div id='gps_fix' class='data-val bad'>---</div><div class='data-lbl'>Fix</div></div>\n"
 "<div class='data-item'><div id='gps_sats' class='data-val'>0</div><div class='data-lbl'>Satellites</div></div>\n"
@@ -1039,9 +1046,11 @@ static const char HTML_PAGE_PART2[] =
 "<div class='data-item'><div id='gps_alt' class='data-val'>---</div><div class='data-lbl'>GPS Alt (m)</div></div>\n"
 "</div>\n"
 "</div>\n"
+"</div>\n"
 "\n"
-"<div class='card'>\n"
-"<h2>Flight Data</h2>\n"
+"<div class='card card-collapse collapsed'>\n"
+"<h2 class='card-hdr' onclick='toggleCard(this)'>Flight Data</h2>\n"
+"<div class='card-body'>\n"
 "<div class='data-grid cols3'>\n"
 "<div class='data-item'><div id='vfr_alt' class='data-val'>---</div><div class='data-lbl'>Alt MSL (m)</div></div>\n"
 "<div class='data-item'><div id='rel_alt' class='data-val'>---</div><div class='data-lbl'>Rel Alt (m)</div></div>\n"
@@ -1051,13 +1060,16 @@ static const char HTML_PAGE_PART2[] =
 "<div class='data-item'><div id='vfr_thr' class='data-val'>---</div><div class='data-lbl'>Throttle (%)</div></div>\n"
 "</div>\n"
 "</div>\n"
+"</div>\n"
 "\n"
-"<div class='card'>\n"
-"<h2>Barometer</h2>\n"
+"<div class='card card-collapse collapsed'>\n"
+"<h2 class='card-hdr' onclick='toggleCard(this)'>Barometer</h2>\n"
+"<div class='card-body'>\n"
 "<div class='data-grid cols3'>\n"
 "<div class='data-item'><div id='baro_press' class='data-val'>---</div><div class='data-lbl'>Pressure (hPa)</div></div>\n"
 "<div class='data-item'><div id='baro_temp' class='data-val'>---</div><div class='data-lbl'>Temp (&deg;C)</div></div>\n"
 "<div class='data-item'><div id='baro_alt' class='data-val'>---</div><div class='data-lbl'>Baro Alt (m)</div></div>\n"
+"</div>\n"
 "</div>\n"
 "</div>\n"
 "\n"
@@ -1094,7 +1106,7 @@ static const char HTML_PAGE_PART2[] =
 "</div>\n"
 "<div style='display:flex;gap:8px'>\n"
 "<button class='btn btn-takeoff' id='btnTakeoff' onclick='doTakeoff()'>TAKEOFF SEQUENCE</button>\n"
-"<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none'>&#9888; ABORT</button>\n"
+"<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='opacity:0.35;pointer-events:none'>&#9888; ABORT</button>\n"
 "</div>\n"
 "<div style='margin-top:8px;font-size:11px;color:#8b949e;line-height:1.6'>\n"
 "GUIDED &rarr; ARM &rarr; Takeoff 5 m &rarr; Hover 10 s &rarr; LAND<br>\n"
@@ -1192,7 +1204,8 @@ static const char HTML_PAGE_PART4[] =
 "document.getElementById('seq_st').style.color=ss==0?'#8b949e':(ss==7?'#f85149':(ss==6?'#3fb950':'#d29922'));\n"
 "document.getElementById('seq_cd').style.display=ss==4?'block':'none';\n"
 "document.getElementById('seq_cd_val').textContent=d.seq_hover||0;\n"
-"document.getElementById('btnAbort').style.display=(ss>0&&ss<6)?'block':'none';\n"
+"document.getElementById('btnAbort').style.opacity=(ss>0&&ss<6)?'1':'0.35';\n"
+"document.getElementById('btnAbort').style.pointerEvents=(ss>0&&ss<6)?'auto':'none';\n"
 "document.getElementById('btnTakeoff').style.display=(ss>0&&ss<6)?'none':'block';\n"
 "}).catch(e=>console.error(e));}\n"
 "\n"
@@ -1243,6 +1256,8 @@ static const char HTML_PAGE_PART4[] =
 "document.getElementById(id).addEventListener('input',function(){\n"
 "if(rcActive)sendRc();\n"
 "});});\n"
+"\n"
+"function toggleCard(el){el.parentElement.classList.toggle('collapsed');}\n"
 "\n"
 "setInterval(update,500);update();\n"
 "</script>\n"
@@ -1350,6 +1365,9 @@ static esp_err_t setup_handler(httpd_req_t *req) {
 
 static esp_err_t arm_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "=== ARM requested ===");
+    // Always disable auto-disarm (bench testing: landing detector triggers after 10s)
+    send_param_set("DISARM_DELAY", 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
     send_rc_override_throttle_low();
     add_log("RC Override: throttle low");
     send_arm_command(true, false);
@@ -1359,6 +1377,8 @@ static esp_err_t arm_handler(httpd_req_t *req) {
 
 static esp_err_t force_arm_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "=== FORCE ARM requested ===");
+    send_param_set("DISARM_DELAY", 0);
+    vTaskDelay(pdMS_TO_TICKS(50));
     send_rc_override_throttle_low();
     add_log("RC Override: throttle low");
     send_arm_command(true, true);
