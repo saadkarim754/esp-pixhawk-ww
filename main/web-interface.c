@@ -120,6 +120,12 @@ static float baro_press_diff = 0.0f;  // hPa
 static int16_t baro_temperature = 0;  // cdegC
 static bool baro_has_data = false;
 
+// Battery data (from SYS_STATUS msg)
+static uint16_t batt_voltage = 0;      // mV
+static int16_t batt_current = -1;      // cA (10*mA), -1=unknown
+static int8_t batt_remaining = -1;     // %, -1=unknown
+static bool batt_has_data = false;
+
 // VFR HUD data
 static float vfr_airspeed = 0.0f;     // m/s
 static float vfr_groundspeed = 0.0f;  // m/s
@@ -139,6 +145,36 @@ static uint32_t rc_last_web_time = 0;  // Last time browser polled /api/data
 
 // Safety: auto-release RC override if browser stops polling (WiFi lost, tab closed, etc.)
 #define RC_OVERRIDE_TIMEOUT_MS 2000
+
+// ============================================================================
+// Auto-flight sequence state
+// ============================================================================
+typedef enum {
+    SEQ_IDLE = 0,
+    SEQ_PREFLIGHT,     // Setting fence, checking GPS
+    SEQ_ARMING,        // Switching to GUIDED + arming
+    SEQ_TAKEOFF,       // MAV_CMD_NAV_TAKEOFF sent, climbing
+    SEQ_HOVERING,      // At target altitude, counting down
+    SEQ_LANDING,       // LAND mode set, descending
+    SEQ_COMPLETE,      // Done
+    SEQ_ABORTED        // User aborted or safety triggered
+} auto_seq_state_t;
+
+static auto_seq_state_t seq_state = SEQ_IDLE;
+static uint32_t seq_timer = 0;          // Timestamp for current phase
+static uint32_t seq_phase_start = 0;    // Start time for arming/takeoff phase
+static float seq_target_alt = 5.0f;     // Target altitude in meters
+static int seq_hover_seconds = 10;      // Hover duration
+static int seq_hover_remaining = 0;     // Countdown
+static bool seq_abort_flag = false;     // Set by abort button
+static uint32_t seq_last_tkoff_send = 0; // Last takeoff cmd send time
+
+#define SEQ_TAKEOFF_TIMEOUT_MS  30000   // Max time to reach altitude
+#define SEQ_ALT_TOLERANCE       1.0f    // Within 1m of target = arrived
+#define SEQ_ARM_TIMEOUT_MS      15000   // Max time to arm
+#define FENCE_ALT_MAX           10.0f   // Geofence max altitude
+#define FENCE_RADIUS            30.0f   // Geofence max radius from home
+#define MAV_CMD_NAV_TAKEOFF     22
 
 // Log buffer (circular)
 static char log_buffer[LOG_BUFFER_SIZE][LOG_MSG_SIZE];
@@ -376,7 +412,7 @@ static void send_rc_override_throttle_low(void) {
 
 static void disable_prearm_checks(void) {
     ESP_LOGI(TAG, "Disabling pre-arm checks...");
-    add_log("Disabling pre-arm checks...");
+    add_log("Disabling checks & failsafes...");
     
     send_param_set("ARMING_CHECK", 0);
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -385,6 +421,215 @@ static void disable_prearm_checks(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
     
     send_param_set("FS_GCS_ENABLE", 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Disable auto-disarm on landing detection (default=10s).
+    // On a bench the drone never "takes off" so ArduPilot thinks it's landed
+    // and auto-disarms after 10 seconds.
+    send_param_set("DISARM_DELAY", 0);
+}
+
+// ============================================================================
+// Auto-flight sequence helpers
+// ============================================================================
+
+static const char *seq_state_name(auto_seq_state_t s) {
+    switch (s) {
+        case SEQ_IDLE:       return "IDLE";
+        case SEQ_PREFLIGHT:  return "PREFLIGHT";
+        case SEQ_ARMING:     return "ARMING";
+        case SEQ_TAKEOFF:    return "TAKEOFF";
+        case SEQ_HOVERING:   return "HOVERING";
+        case SEQ_LANDING:    return "LANDING";
+        case SEQ_COMPLETE:   return "COMPLETE";
+        case SEQ_ABORTED:    return "ABORTED";
+        default:             return "UNKNOWN";
+    }
+}
+
+static void setup_geofence(void) {
+    ESP_LOGI(TAG, "Setting up geofence: alt=%.0fm radius=%.0fm", FENCE_ALT_MAX, FENCE_RADIUS);
+    add_log("Geofence: alt=%.0fm rad=%.0fm", FENCE_ALT_MAX, FENCE_RADIUS);
+
+    send_param_set("FENCE_TYPE", 3);          // Altitude + Circle
+    vTaskDelay(pdMS_TO_TICKS(100));
+    send_param_set("FENCE_ALT_MAX", FENCE_ALT_MAX);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    send_param_set("FENCE_RADIUS", FENCE_RADIUS);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    send_param_set("FENCE_ACTION", 2);        // Always LAND on breach
+    vTaskDelay(pdMS_TO_TICKS(100));
+    send_param_set("FENCE_ENABLE", 1);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+static void send_takeoff_command(float altitude) {
+    ESP_LOGI(TAG, "Sending MAV_CMD_NAV_TAKEOFF alt=%.1f", altitude);
+    add_log("Takeoff cmd: %.1fm", altitude);
+
+    uint8_t buf[64];
+    int len = mavlink_msg_command_long_pack(
+        COMPANION_SYSTEM_ID, COMPANION_COMPONENT_ID, buf,
+        PIXHAWK_SYSTEM_ID, 0,         // target sys, target comp
+        MAV_CMD_NAV_TAKEOFF, 0,        // command, confirmation
+        0, 0, 0, 0, 0, 0, altitude);  // params 1-7 (alt in param7)
+    send_mavlink_message(buf, len);
+}
+
+/**
+ * @brief State-machine tick for the automated takeoff sequence.
+ *        Called at 4 Hz from the heartbeat task.
+ *
+ *  PREFLIGHT  → check GPS, set geofence, disable prearm
+ *  ARMING     → switch GUIDED, arm (retry every 2 s, max 5 tries)
+ *  TAKEOFF    → MAV_CMD_NAV_TAKEOFF, monitor rel-alt
+ *  HOVERING   → countdown hover_seconds
+ *  LANDING    → LAND mode, wait for disarm
+ *  COMPLETE / ABORTED
+ */
+static void auto_sequence_tick(void) {
+    if (seq_state == SEQ_IDLE || seq_state == SEQ_COMPLETE || seq_state == SEQ_ABORTED)
+        return;
+
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    /* ---- global abort check ---- */
+    if (seq_abort_flag) {
+        seq_abort_flag = false;
+        ESP_LOGW(TAG, "AUTO-FLIGHT ABORTED by user");
+        add_log("!! ABORT: switching to LAND !!");
+        send_mode_command(9);   // LAND
+        seq_state = SEQ_ABORTED;
+        return;
+    }
+
+    switch (seq_state) {
+
+    /* ---- PREFLIGHT: GPS + geofence + disable prearm ---- */
+    case SEQ_PREFLIGHT: {
+        if (gps_fix_type < 3 || gps_satellites < 6) {
+            /* log once per 5 s */
+            if ((now - seq_timer) % 5000 < 250)
+                add_log("Waiting GPS (fix=%d sats=%d)...", gps_fix_type, gps_satellites);
+            if ((now - seq_timer) > 30000) {
+                add_log("GPS timeout - aborting");
+                seq_state = SEQ_ABORTED;
+            }
+            return;
+        }
+
+        add_log("GPS OK (fix=%d sats=%d)", gps_fix_type, gps_satellites);
+        disable_prearm_checks();
+        setup_geofence();
+
+        seq_state = SEQ_ARMING;
+        seq_timer = now;
+        seq_phase_start = now;
+        add_log("Seq: PREFLIGHT -> ARMING");
+        ESP_LOGI(TAG, "Seq: PREFLIGHT -> ARMING");
+        break;
+    }
+
+    /* ---- ARMING: GUIDED mode + arm ---- */
+    case SEQ_ARMING: {
+        if (is_armed) {
+            seq_state = SEQ_TAKEOFF;
+            seq_timer = now;
+            seq_last_tkoff_send = 0;
+            add_log("ARMED -> sending TAKEOFF");
+            ESP_LOGI(TAG, "Seq: ARMED -> TAKEOFF");
+            send_takeoff_command(seq_target_alt);
+            return;
+        }
+
+        /* give up after 15 s from start of arming phase */
+        if ((now - seq_phase_start) > SEQ_ARM_TIMEOUT_MS) {
+            add_log("Failed to arm after 15s - aborting");
+            seq_state = SEQ_ABORTED;
+            break;
+        }
+
+        /* ensure GUIDED */
+        if (pixhawk_custom_mode != 4) {
+            send_mode_command(4);
+            add_log("Setting GUIDED mode...");
+            return;   /* come back next tick */
+        }
+
+        /* try arming every 2 s */
+        if ((now - seq_timer) > 2000) {
+            send_rc_override_throttle_low();
+            send_arm_command(true, false);
+            add_log("Arm attempt...");
+            seq_timer = now;
+        }
+        break;
+    }
+
+    /* ---- TAKEOFF: monitor altitude ---- */
+    case SEQ_TAKEOFF: {
+        float rel_alt_m = global_rel_alt / 1000.0f;
+
+        /* resend takeoff command every 3 s in case first was missed */
+        if (seq_last_tkoff_send == 0) seq_last_tkoff_send = now;
+        if ((now - seq_last_tkoff_send) > 3000) {
+            send_takeoff_command(seq_target_alt);
+            seq_last_tkoff_send = now;
+        }
+
+        if (rel_alt_m >= (seq_target_alt - SEQ_ALT_TOLERANCE)) {
+            seq_state = SEQ_HOVERING;
+            seq_timer = now;
+            seq_hover_remaining = seq_hover_seconds;
+            add_log("Reached %.1fm - hovering %ds", rel_alt_m, seq_hover_seconds);
+            ESP_LOGI(TAG, "Seq: HOVERING for %ds", seq_hover_seconds);
+            return;
+        }
+
+        if ((now - seq_timer) > SEQ_TAKEOFF_TIMEOUT_MS) {
+            add_log("Takeoff timeout (%.1fm) - LAND", rel_alt_m);
+            send_mode_command(9);
+            seq_state = SEQ_ABORTED;
+        }
+        break;
+    }
+
+    /* ---- HOVERING: count down ---- */
+    case SEQ_HOVERING: {
+        int elapsed = (int)((now - seq_timer) / 1000);
+        seq_hover_remaining = seq_hover_seconds - elapsed;
+        if (seq_hover_remaining <= 0) {
+            seq_hover_remaining = 0;
+            add_log("Hover done - LANDING");
+            ESP_LOGI(TAG, "Seq: LANDING");
+            send_mode_command(9);
+            seq_state = SEQ_LANDING;
+            seq_timer = now;
+        }
+        break;
+    }
+
+    /* ---- LANDING: wait for disarm ---- */
+    case SEQ_LANDING: {
+        if (pixhawk_custom_mode != 9)
+            send_mode_command(9);
+
+        if (!is_armed) {
+            seq_state = SEQ_COMPLETE;
+            add_log("Landed & disarmed - COMPLETE!");
+            ESP_LOGI(TAG, "Seq: COMPLETE");
+            return;
+        }
+        /* patience message every 30 s */
+        if ((now - seq_timer) > 30000) {
+            add_log("Still landing...");
+            seq_timer = now;
+        }
+        break;
+    }
+
+    default: break;
+    }
 }
 
 // ============================================================================
@@ -484,6 +729,16 @@ static void handle_vfr_hud(const mavlink_message_t *msg) {
     vfr_has_data = true;
 }
 
+static void handle_sys_status(const mavlink_message_t *msg) {
+    mavlink_sys_status_t sys;
+    mavlink_msg_sys_status_decode(msg, &sys);
+    
+    batt_voltage = sys.voltage_battery;
+    batt_current = sys.current_battery;
+    batt_remaining = sys.battery_remaining;
+    batt_has_data = true;
+}
+
 static void handle_command_ack(const mavlink_message_t *msg) {
     mavlink_command_ack_t ack;
     mavlink_msg_command_ack_decode(msg, &ack);
@@ -550,6 +805,9 @@ static void process_mavlink_message(const mavlink_message_t *msg) {
     switch (msg->msgid) {
         case MAVLINK_MSG_ID_HEARTBEAT:
             handle_heartbeat(msg);
+            break;
+        case MAVLINK_MSG_ID_SYS_STATUS:
+            handle_sys_status(msg);
             break;
         case MAVLINK_MSG_ID_ATTITUDE:
             handle_attitude(msg);
@@ -631,6 +889,9 @@ static void mavlink_heartbeat_task(void *pvParameters) {
                 send_rc_override(rc_chan1, rc_chan2, rc_chan3, rc_chan4);
             }
         }
+        
+        // Tick the auto-flight state machine (~4 Hz)
+        auto_sequence_tick();
         
         vTaskDelay(pdMS_TO_TICKS(250));
     }
@@ -721,11 +982,15 @@ static const char HTML_PAGE_PART1[] =
 ".rc-group{margin-bottom:8px}\n"
 ".rc-label{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-bottom:4px}\n"
 ".rc-label span:last-child{color:#e6edf3;font-weight:700;font-family:monospace}\n"
-"input[type=range]{-webkit-appearance:none;width:100%;height:8px;background:#21262d;border-radius:4px;outline:none}\n"
-"input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;background:#58a6ff;border-radius:50%;cursor:pointer}\n"
+"input[type=range]{-webkit-appearance:none;width:100%;height:16px;background:#21262d;border-radius:8px;outline:none;margin:6px 0}\n"
+"input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:40px;height:40px;background:#58a6ff;border-radius:50%;cursor:pointer;border:3px solid #1f6feb}\n"
 ".rc-btns{display:flex;gap:8px;margin-top:8px}\n"
 ".btn-rc{background:#238636;color:#fff}\n"
 ".btn-rc-stop{background:#da3633;color:#fff}\n"
+".btn-takeoff{background:#6e40c9;color:#fff;flex:2}\n"
+".btn-abort{background:#da3633;color:#fff;flex:1}\n"
+".seq-box{background:#0d1117;border-radius:8px;padding:10px;margin-bottom:8px;text-align:center}\n"
+".seq-state{font-size:20px;font-weight:700}\n"
 /* Logs */
 ".logs{background:#010409;border:1px solid #21262d;border-radius:8px;padding:8px;height:160px;overflow-y:auto;font-family:'Cascadia Code',monospace;font-size:11px;line-height:1.5}\n"
 ".log-entry{padding:1px 0;border-bottom:1px solid #161b22;color:#8b949e}\n"
@@ -744,6 +1009,11 @@ static const char HTML_PAGE_PART1[] =
 "<div class='status-item'><div id='armed' class='status-value'>---</div><div class='status-label'>Armed</div></div>\n"
 "<div class='status-item'><div id='mode' class='status-value' style='font-size:16px'>---</div><div class='status-label'>Mode</div></div>\n"
 "<div class='status-item'><div id='sysstat' class='status-value' style='font-size:14px'>---</div><div class='status-label'>State</div></div>\n"
+"</div>\n"
+"<div class='status' style='margin-top:8px'>\n"
+"<div class='status-item'><div id='batt_v' class='status-value' style='font-size:18px'>---</div><div class='status-label'>Battery (V)</div></div>\n"
+"<div class='status-item'><div id='batt_a' class='status-value' style='font-size:18px'>---</div><div class='status-label'>Current (A)</div></div>\n"
+"<div class='status-item'><div id='batt_pct' class='status-value' style='font-size:18px'>---</div><div class='status-label'>Remaining</div></div>\n"
 "</div>\n"
 "</div>\n"
 "\n"
@@ -815,6 +1085,22 @@ static const char HTML_PAGE_PART2[] =
 "<option value='21'>SMART_RTL</option>\n"
 "</select>\n"
 "</div>\n"
+"\n"
+"<div class='card'>\n"
+"<h2>&#128640; Auto Flight</h2>\n"
+"<div class='seq-box'>\n"
+"<div class='seq-state' id='seq_st' style='color:#8b949e'>IDLE</div>\n"
+"<div id='seq_cd' style='display:none;font-size:16px;color:#d29922;margin-top:4px'>Hovering: <span id='seq_cd_val'>10</span>s</div>\n"
+"</div>\n"
+"<div style='display:flex;gap:8px'>\n"
+"<button class='btn btn-takeoff' id='btnTakeoff' onclick='doTakeoff()'>TAKEOFF SEQUENCE</button>\n"
+"<button class='btn btn-abort' id='btnAbort' onclick='doAbort()' style='display:none'>&#9888; ABORT</button>\n"
+"</div>\n"
+"<div style='margin-top:8px;font-size:11px;color:#8b949e;line-height:1.6'>\n"
+"GUIDED &rarr; ARM &rarr; Takeoff 5 m &rarr; Hover 10 s &rarr; LAND<br>\n"
+"Geofence: 10 m altitude / 30 m radius &bull; LAND on breach\n"
+"</div>\n"
+"</div>\n"
 "\n";
 
 static const char HTML_PAGE_PART3[] =
@@ -863,6 +1149,14 @@ static const char HTML_PAGE_PART4[] =
 "document.getElementById('armed').className='status-value '+(d.armed?'armed':'disarmed');\n"
 "document.getElementById('mode').textContent=d.mode;\n"
 "document.getElementById('sysstat').textContent=d.status;\n"
+/* Battery */
+"if(d.batt_has){\n"
+"var bv=d.batt_v/1000;document.getElementById('batt_v').textContent=bv.toFixed(2);\n"
+"document.getElementById('batt_v').className='status-value '+(bv>11.1?'connected':(bv>10.5?'':'armed'));\n"
+"document.getElementById('batt_a').textContent=d.batt_a>=0?(d.batt_a/100).toFixed(1):'---';\n"
+"document.getElementById('batt_pct').textContent=d.batt_pct>=0?d.batt_pct+'%':'---';\n"
+"document.getElementById('batt_pct').className='status-value '+(d.batt_pct>25?'connected':(d.batt_pct>10?'':'armed'));\n"
+"}\n"
 "document.getElementById('roll').innerHTML=d.roll.toFixed(1)+'&deg;';\n"
 "document.getElementById('pitch').innerHTML=d.pitch.toFixed(1)+'&deg;';\n"
 "document.getElementById('yaw').innerHTML=d.yaw.toFixed(1)+'&deg;';\n"
@@ -892,6 +1186,14 @@ static const char HTML_PAGE_PART4[] =
 "var ld=document.getElementById('logs');\n"
 "ld.innerHTML=d.logs.map(l=>'<div class=\"log-entry\">'+l+'</div>').join('');\n"
 "ld.scrollTop=ld.scrollHeight;\n"
+/* Auto flight sequence UI */
+"var ss=d.seq_state||0;\n"
+"document.getElementById('seq_st').textContent=d.seq_name||'IDLE';\n"
+"document.getElementById('seq_st').style.color=ss==0?'#8b949e':(ss==7?'#f85149':(ss==6?'#3fb950':'#d29922'));\n"
+"document.getElementById('seq_cd').style.display=ss==4?'block':'none';\n"
+"document.getElementById('seq_cd_val').textContent=d.seq_hover||0;\n"
+"document.getElementById('btnAbort').style.display=(ss>0&&ss<6)?'block':'none';\n"
+"document.getElementById('btnTakeoff').style.display=(ss>0&&ss<6)?'none':'block';\n"
 "}).catch(e=>console.error(e));}\n"
 "\n"
 "function doSetup(){fetch('/api/setup',{method:'POST'}).then(()=>update());}\n"
@@ -899,6 +1201,8 @@ static const char HTML_PAGE_PART4[] =
 "function doForceArm(){fetch('/api/forcearm',{method:'POST'}).then(()=>update());}\n"
 "function doDisarm(){fetch('/api/disarm',{method:'POST'}).then(()=>update());}\n"
 "function doSetMode(){var m=document.getElementById('modeSelect').value;if(m)fetch('/api/mode?m='+m,{method:'POST'}).then(()=>update());document.getElementById('modeSelect').value='';}\n"
+"function doTakeoff(){if(!confirm('Start auto takeoff?\\nGUIDED > ARM > 5m > hover 10s > LAND\\n\\nAre props clear?'))return;fetch('/api/takeoff',{method:'POST'}).then(()=>update());}\n"
+"function doAbort(){fetch('/api/abort',{method:'POST'}).then(()=>update());}\n"
 "\n"
 /* RC slider value display */
 "['thr','yaw_rc','pitch_rc','roll_rc'].forEach(function(id){\n"
@@ -998,6 +1302,8 @@ static esp_err_t data_handler(httpd_req_t *req) {
         "\"baro_has\":%s,\"baro_press\":%.2f,\"baro_temp\":%d,\"baro_alt\":%.1f,"
         "\"vfr_has\":%s,\"vfr_alt\":%.2f,\"vfr_gspd\":%.2f,\"vfr_hdg\":%d,"
         "\"vfr_climb\":%.2f,\"vfr_thr\":%d,"
+        "\"batt_has\":%s,\"batt_v\":%d,\"batt_a\":%d,\"batt_pct\":%d,"
+        "\"seq_state\":%d,\"seq_hover\":%d,\"seq_name\":\"%s\","
         "\"rc_active\":%s,"
         "\"logs\":%s}",
         is_connected ? "true" : "false",
@@ -1019,6 +1325,9 @@ static esp_err_t data_handler(httpd_req_t *req) {
         vfr_has_data ? "true" : "false",
         vfr_alt, vfr_groundspeed, vfr_heading,
         vfr_climb, vfr_throttle,
+        batt_has_data ? "true" : "false",
+        batt_voltage, batt_current, batt_remaining,
+        (int)seq_state, seq_hover_remaining, seq_state_name(seq_state),
         rc_override_active ? "true" : "false",
         logs_json
     );
@@ -1115,9 +1424,38 @@ static esp_err_t rc_stop_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t takeoff_handler(httpd_req_t *req) {
+    if (seq_state != SEQ_IDLE && seq_state != SEQ_COMPLETE && seq_state != SEQ_ABORTED) {
+        httpd_resp_send(req, "BUSY", 4);
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "=== AUTO TAKEOFF SEQUENCE START ===");
+    add_log(">>> AUTO TAKEOFF SEQUENCE <<<");
+    seq_abort_flag = false;
+    seq_hover_remaining = seq_hover_seconds;
+    seq_state = SEQ_PREFLIGHT;
+    seq_timer = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+static esp_err_t abort_handler(httpd_req_t *req) {
+    ESP_LOGW(TAG, "=== ABORT requested ===");
+    if (seq_state > SEQ_IDLE && seq_state < SEQ_COMPLETE) {
+        seq_abort_flag = true;
+        add_log("ABORT requested by user");
+    } else {
+        /* If not in sequence, just switch to LAND as a safety measure */
+        send_mode_command(9);
+        add_log("LAND mode (no sequence active)");
+    }
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
 static httpd_handle_t start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 14;
     config.stack_size = 8192;
     httpd_handle_t server = NULL;
 
@@ -1131,6 +1469,8 @@ static httpd_handle_t start_webserver(void) {
         httpd_uri_t mode     = { .uri = "/api/mode",      .method = HTTP_POST, .handler = mode_handler };
         httpd_uri_t rc       = { .uri = "/api/rc",        .method = HTTP_POST, .handler = rc_handler };
         httpd_uri_t rcstop   = { .uri = "/api/rc/stop",   .method = HTTP_POST, .handler = rc_stop_handler };
+        httpd_uri_t takeoff  = { .uri = "/api/takeoff",   .method = HTTP_POST, .handler = takeoff_handler };
+        httpd_uri_t abort_f  = { .uri = "/api/abort",     .method = HTTP_POST, .handler = abort_handler };
         
         httpd_register_uri_handler(server, &root);
         httpd_register_uri_handler(server, &data);
@@ -1141,8 +1481,10 @@ static httpd_handle_t start_webserver(void) {
         httpd_register_uri_handler(server, &mode);
         httpd_register_uri_handler(server, &rc);
         httpd_register_uri_handler(server, &rcstop);
+        httpd_register_uri_handler(server, &takeoff);
+        httpd_register_uri_handler(server, &abort_f);
         
-        ESP_LOGI(TAG, "HTTP server started (9 endpoints)");
+        ESP_LOGI(TAG, "HTTP server started (11 endpoints)");
     }
     
     return server;
@@ -1175,7 +1517,7 @@ void app_main(void) {
     
     // Heartbeat task runs at 4Hz (also resends RC override)
     xTaskCreate(mavlink_rx_task, "mav_rx", 4096, NULL, 10, NULL);
-    xTaskCreate(mavlink_heartbeat_task, "mav_hb", 2048, NULL, 5, NULL);
+    xTaskCreate(mavlink_heartbeat_task, "mav_hb", 4096, NULL, 5, NULL);
     
     add_log("System ready (sysid=%d)", COMPANION_SYSTEM_ID);
     

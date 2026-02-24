@@ -40,6 +40,9 @@
 #define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_CRC 124
 #define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE_LEN 18
 
+#define MAVLINK_MSG_ID_SYS_STATUS_CRC 124
+#define MAVLINK_MSG_ID_SYS_STATUS_LEN 31
+
 #define MAVLINK_MSG_ID_GPS_RAW_INT_CRC 24
 #define MAVLINK_MSG_ID_GPS_RAW_INT_LEN 30
 
@@ -71,6 +74,16 @@
 // ============================================================================
 // Message Structures
 // ============================================================================
+
+/**
+ * @brief SYS_STATUS message structure (MSG ID 1)
+ * Subset of fields we care about (battery)
+ */
+typedef struct __mavlink_sys_status_t {
+    uint16_t voltage_battery;    // Battery voltage [mV]
+    int16_t current_battery;     // Battery current [cA] (10 * mA), -1 if not measured
+    int8_t battery_remaining;    // Battery remaining [%] 0-100, -1 if not estimated
+} mavlink_sys_status_t;
 
 /**
  * @brief Heartbeat message structure
@@ -847,6 +860,27 @@ static inline uint16_t mavlink_msg_rc_channels_override_pack(
     buf[29] = (crc >> 8) & 0xFF;
     
     return 30;
+}
+
+// ============================================================================
+// SYS_STATUS Message Functions
+// ============================================================================
+
+/**
+ * @brief Decode SYS_STATUS message (MSG ID 1)
+ * Wire order: sensors_present(u32), sensors_enabled(u32), sensors_health(u32),
+ *             load(u16), voltage_battery(u16), current_battery(i16), ...
+ *             battery_remaining(i8) at byte 18
+ */
+static inline void mavlink_msg_sys_status_decode(const mavlink_message_t *msg,
+                                                  mavlink_sys_status_t *status) {
+    const uint8_t *p = (const uint8_t *)msg->payload64;
+    // voltage_battery at offset 14-15 (after 3x uint32 + 1x uint16)
+    status->voltage_battery = p[14] | (p[15] << 8);
+    // current_battery at offset 16-17
+    status->current_battery = (int16_t)(p[16] | (p[17] << 8));
+    // battery_remaining at offset 30 (after drop_rate_comm, errors_comm, errors_count1-4)
+    status->battery_remaining = (int8_t)p[30];
 }
 
 // ============================================================================
