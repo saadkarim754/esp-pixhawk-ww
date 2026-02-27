@@ -387,7 +387,8 @@ static void send_param_set(const char *param_id, float value) {
 /**
  * @brief Send RC_CHANNELS_OVERRIDE with current slider values
  * Channel mapping: 1=Roll, 2=Pitch, 3=Throttle, 4=Yaw
- * Value 0 = don't override that channel
+ * Value 0 = release channel back to RC radio
+ * Value UINT16_MAX (65535) = ignore this channel (leave unchanged)
  */
 static void send_rc_override(uint16_t ch1, uint16_t ch2, uint16_t ch3, uint16_t ch4) {
     uint8_t buf[32];
@@ -399,7 +400,7 @@ static void send_rc_override(uint16_t ch1, uint16_t ch2, uint16_t ch3, uint16_t 
         PIXHAWK_SYSTEM_ID,
         0,
         ch1, ch2, ch3, ch4,
-        0, 0, 0, 0
+        UINT16_MAX, UINT16_MAX, UINT16_MAX, UINT16_MAX
     );
     
     send_mavlink_message(buf, len);
@@ -427,6 +428,13 @@ static void disable_prearm_checks(void) {
     // On a bench the drone never "takes off" so ArduPilot thinks it's landed
     // and auto-disarms after 10 seconds.
     send_param_set("DISARM_DELAY", 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // CRITICAL: ArduPilot ignores RC_CHANNELS_OVERRIDE unless the sender's
+    // system ID matches SYSID_MYGCS. Default is 255 (Mission Planner).
+    // Set it to our ESP32's system ID so overrides are accepted.
+    send_param_set("SYSID_MYGCS", (float)COMPANION_SYSTEM_ID);
+    add_log("Set SYSID_MYGCS=%d (RC override)", COMPANION_SYSTEM_ID);
 }
 
 // ============================================================================

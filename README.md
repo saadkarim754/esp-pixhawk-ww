@@ -65,7 +65,7 @@ All outgoing commands target:
 
 ## Problems Encountered & Solutions
 
-This project went through **8 major bugs** before reaching a fully working state. Each one is documented below in the order they were discovered and fixed.
+This project went through **9 major bugs** before reaching a fully working state. Each one is documented below in the order they were discovered and fixed.
 
 ---
 
@@ -244,6 +244,35 @@ send_param_set("DISARM_DELAY", 0);
 
 ---
 
+### Problem 9: RC Override Ignored — Motors Stuck at Idle
+
+**Symptom:** After arming, sliding the throttle slider from 1000 up to 2000 had zero effect on motor speed. The logs showed `RC Override: R=1500 P=1500 T=1800 Y=1500` being sent correctly, but the motors just kept spinning at idle (arming speed).
+
+**Root Cause:** ArduPilot silently **ignores all RC_CHANNELS_OVERRIDE messages** unless the sender's system ID matches the `SYSID_MYGCS` parameter. From the [ArduPilot RC Input docs](https://ardupilot.org/dev/docs/mavlink-rc-input.html):
+
+> *"The autopilot will ignore the RC input messages if the sender's system id does not match the autopilot's SYSID_MYGCS"*
+
+`SYSID_MYGCS` defaults to **255** (Mission Planner's system ID). Our ESP32 sends with system ID **200**. So the Pixhawk received every RC override message, validated the CRC, but then checked the sender's sysid (200) against `SYSID_MYGCS` (255) — mismatch → silently discarded.
+
+This is separate from the system ID required for other commands (arm, mode change, param set). Those commands work with any valid GCS sysid, but RC override specifically requires the `SYSID_MYGCS` match.
+
+**Fix (two parts):**
+
+1. **Set `SYSID_MYGCS` to match the ESP32's system ID** — added to the Setup handler:
+```c
+send_param_set("SYSID_MYGCS", (float)COMPANION_SYSTEM_ID);  // 200
+```
+
+2. **Use `UINT16_MAX` (65535) for unused channels** — channels 5-8 were being sent as `0`, which means "release back to RC radio". Changed to `65535` meaning "ignore/leave unchanged", which is safer when no physical RC transmitter is connected:
+```c
+send_rc_override(ch1, ch2, ch3, ch4,
+                 UINT16_MAX, UINT16_MAX, UINT16_MAX, UINT16_MAX);
+```
+
+**After this fix, moving the throttle slider immediately changed motor speed.**
+
+---
+
 ## Features Implemented
 
 ### Web Interface
@@ -289,6 +318,7 @@ PREFLIGHT ──→ ARMING ──→ TAKEOFF ──→ HOVERING ──→ LANDIN
 | `FS_THR_ENABLE` | 0 | Disable throttle failsafe |
 | `FS_GCS_ENABLE` | 0 | Disable GCS failsafe |
 | `DISARM_DELAY` | 0 | Disable auto-disarm on landing detection |
+| `SYSID_MYGCS` | 200 | Accept RC_CHANNELS_OVERRIDE from ESP32 (sysid=200) |
 
 These are set via `PARAM_SET` messages (MSG_ID 23) with `MAV_PARAM_TYPE_REAL32`.
 
@@ -404,5 +434,8 @@ idf.py -p COM3 monitor  # View serial logs
 | 6 | Intermittent delivery | target_component=1 | Changed to 0 (broadcast) |
 | 7 | Auto-disarm after 10s | DISARM_DELAY default=10 | Set DISARM_DELAY=0 |
 | 8 | Battery failsafe on bench | 0.74V on USB power | Test with real battery (kept failsafe enabled) |
+| 9 | **RC Override ignored** | **SYSID_MYGCS=255 ≠ ESP32 sysid=200** | **Set SYSID_MYGCS=200 + use UINT16_MAX for unused ch** |
 
 **The critical breakthrough was Fix #4** — the CRC bug. Every single outgoing message (except the very first one with seq=0) had an invalid checksum and was silently dropped by the Pixhawk. Once fixed, arming, mode changes, parameter sets, and RC overrides all worked immediately.
+
+**Fix #9 was the second "silent drop" bug** — even with valid CRC, ArduPilot has an additional sender-ID check specifically for RC override messages. Without `SYSID_MYGCS` matching, throttle/yaw/pitch/roll commands were accepted by the MAVLink layer but rejected by the RC input handler.
